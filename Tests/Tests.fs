@@ -67,5 +67,5 @@ let ``Can understand tagged HTML`` () =
     let (date, title, description, next) = HtmlDocument.digest s taggedHtml
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)
-    //TODO: Assert.Equal(Some (DateTime(2021,1,17,7,23,03)), date)
+    Assert.Equal(Some (DateTime(2021,1,9)), date)
 
