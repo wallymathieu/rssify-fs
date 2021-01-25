@@ -13,6 +13,7 @@
     <PackageReference Include="FSharp.Data" Version="3.3.3" />
     <PackageReference Include="FSharpPlus" Version="1.1.7" />
     <PackageReference Include="Microsoft.Recognizers.Text.DateTime" Version="1.5.0" />
+    <PackageReference Include="Marten.FSharp" Version="0.4.3" />
   </ItemGroup>
 
 </Project>

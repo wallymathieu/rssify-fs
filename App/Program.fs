@@ -17,15 +17,19 @@ open Microsoft.Extensions.DependencyInjection
 open System.Text.RegularExpressions
 open Giraffe
 open Rssify.Core
+open Microsoft.Extensions.Options
+open Marten
+open Marten.Events
 
 (*
  /rss?url=encodedUrl&date=encodedDateSelector&description=encodedDescriptionSelector..
 *)
-(*
 module Web=
-    let uriToSiteAndSelectors
-*)
-module Web=
+  [<CLIMutable>]
+  type StoreConfig = {
+
+    SchemaName        : string
+  }
   [<CLIMutable>]
   type QueryString =
     {
@@ -62,17 +66,19 @@ module Web=
 
   let parsingErrorHandler err = RequestErrors.BAD_REQUEST err
   let tryBindQuery<'T> = tryBindQuery<'T> parsingErrorHandler None
-  let webApp (s:IStore) =
-    let rss q =
-      let (site,selectors) = toSiteAndSelectors s q
-      let timestamp = s.GetTimestamp site.Id
-      match timestamp with
-      | Some t when (DateTime.UtcNow - t).TotalDays < 1.0 -> ()
-      | _ -> Site.munchAndStore site selectors s
-      let items = s.GetFeedItems site.Id
-      let rssXml = Rss.feed site items
-      xml (string rssXml)
-
+  let webApp =
+    let rss q : HttpHandler =
+      fun next ctx ->
+        let s = ctx.RequestServices.GetRequiredService<IStore>()
+        
+        let (site,selectors) = toSiteAndSelectors s q
+        let timestamp = s.GetTimestamp site.Id
+        match timestamp with
+        | Some t when (DateTime.UtcNow - t).TotalDays < 1.0 -> ()
+        | _ -> Site.munchAndStore site selectors s
+        let items = s.GetFeedItems site.Id
+        let rssXml = Rss.feed site items
+        xml (string rssXml) next ctx
     choose [ route "/" >=> (text "")
              route "/rss" >=> (tryBindQuery<QueryString> rss )]
 
@@ -80,10 +86,35 @@ let errorHandler (ex : Exception) (logger : ILogger) =
   logger.LogError(EventId(), ex, "An unhandled exception has occurred while executing the request.")
   clearResponse >=> setStatusCode 500 >=> text ex.Message
 
-let configureServices (services : IServiceCollection) =
+let configureServices (ctx:WebHostBuilderContext) (services : IServiceCollection) =
   services
+      .AddRouting()
       .AddGiraffe()
       .AddDataProtection() |> ignore
+  services
+      .AddOptions()
+      .Configure<Web.StoreConfig>(ctx.Configuration) |> ignore
+  let conn=ctx.Configuration.GetConnectionString "Default"
+
+  if String.IsNullOrEmpty conn then
+    services.AddSingleton<IStore>(Store.inMemory()) |> ignore
+  else
+    services
+      .AddSingleton<DocumentStore>(fun di ->
+        DocumentStore.For(fun opt ->
+          let config = di.GetRequiredService<IOptions<Web.StoreConfig>>()
+          opt.Connection(conn)
+          opt.AutoCreateSchemaObjects <- AutoCreate.All
+          opt.DatabaseSchemaName <- let name = config.Value.SchemaName in if isNull name then "rssify" else name
+          opt.Events.StreamIdentity <- StreamIdentity.AsString
+        )
+      )
+      .AddScoped<IDocumentSession>(fun di-> di.GetRequiredService<DocumentStore>().OpenSession())
+      .AddScoped<IStore> (fun di->
+        let session = di.GetRequiredService<IDocumentSession>()
+        Store.marten session
+      ) |> ignore
+
 
 let configureLogging (loggerBuilder : ILoggingBuilder) =
   loggerBuilder.AddFilter(fun lvl -> lvl.Equals LogLevel.Error)
@@ -92,12 +123,10 @@ let configureLogging (loggerBuilder : ILoggingBuilder) =
 
 [<EntryPoint>]
 let main argv =
-  // parse arguments
 
-  let store = Store.InMemory()
   let configureApp (app : IApplicationBuilder) =
     app.UseGiraffeErrorHandler(errorHandler)
-       .UseGiraffe (Web.webApp store)
+       .UseGiraffe (Web.webApp)
 
   WebHost.CreateDefaultBuilder()
         .Configure(Action<IApplicationBuilder> configureApp)

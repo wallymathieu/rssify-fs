@@ -106,15 +106,38 @@ type IStore =
   abstract member GetFeedItems: SiteId -> FeedItem seq
   abstract member AddFeedItems: SiteId*FeedItem seq -> unit
 module Store=
-  type InMemory()=
+  let inMemory()=
     let mutable map = Map.empty
     let mutable timestamps = Map.empty
-    interface IStore with
+    { new IStore with
       member __.GetTimestamp (SiteId siteId) = Map.tryFind siteId timestamps
       member __.GetFeedItems (SiteId siteId) = Map.tryFind siteId map |> Option.defaultValue Seq.empty
       member __.AddFeedItems (SiteId siteId, items) = 
           map <- Map.change siteId (function | Some v -> Some (Seq.append v items) | None -> Some items) map
-          timestamps <- Map.add siteId DateTime.UtcNow timestamps
+          timestamps <- Map.add siteId DateTime.UtcNow timestamps }
+    
+
+  open Marten
+
+  type private TimeStamps={mutable Id:string; mutable Value:DateTime}
+  with
+    static member GetValue (m:TimeStamps) = m.Value
+  type private FeedItems={mutable Id:string; mutable Items:FeedItem list}
+  with
+    static member GetItems (m:FeedItems) = m.Items
+  let marten (session:IDocumentSession)=
+      { new IStore with
+        member __.GetTimestamp (SiteId siteId) = Session.loadByString<TimeStamps> (string siteId) session |> map TimeStamps.GetValue
+        member __.GetFeedItems (SiteId siteId) = Session.loadByString<FeedItems> (string siteId) session |> map FeedItems.GetItems |> map Seq.ofList |> Option.defaultValue Seq.empty
+        member __.AddFeedItems (SiteId siteId, items) =
+          let items = List.ofSeq items
+          let id = string siteId
+          match Session.loadByString<FeedItems> (id) session with 
+          | Some itemsInDb -> itemsInDb.Items<-itemsInDb.Items @ items
+          | None -> session.Store { Id=id; Items=items }
+          session.Store { Id=id; Value = DateTime.UtcNow }
+          session.SaveChanges() }
+
 
 module Site=
   /// iterate on site as long as there is a next url
