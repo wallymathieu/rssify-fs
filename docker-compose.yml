@@ -1,0 +1,30 @@
+# docker-compose.yml
+version: '3'
+services:
+  database:
+    image: "postgres" # use latest official postgres version
+    environment:
+      POSTGRES_USER: unicorn_user
+      POSTGRES_PASSWORD: magical_password
+      POSTGRES_DB: rssify
+    volumes:
+      - database-data:/var/lib/postgresql/data/ # persist data even if container shuts down
+
+  service:
+    image: rssify/service:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:80
+      ConnectionStrings__Default: "User ID=unicorn_user;Password=magical_password;Host=database;Port=5432;Database=rssify;Pooling=true"
+      PollTimeout: "0:1:0"
+      ItemsToPoll: 10
+      SchemaName: "rssify"
+    ports:
+      - "5100:80"
+    depends_on:
+      - database
+
+volumes:
+  database-data: # named volumes can be managed easier using docker-compose

@@ -1,26 +1,27 @@
 // Learn more about F# at http://docs.microsoft.com/dotnet/fsharp
 
 open System
-open FSharpPlus
-open FSharpPlus.Data
-type DictEntry = System.Collections.DictionaryEntry
-
+open System.Text
+open System.Threading
+open System.Threading.Tasks
+open Microsoft.Extensions.Hosting
+open Microsoft.Extensions.Options
 open Microsoft.AspNetCore
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Hosting
 open Microsoft.AspNetCore.Http
-open Microsoft.AspNetCore.Http.Features
-open Microsoft.AspNetCore.Authentication
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.DependencyInjection
-open System.Text.RegularExpressions
+type DictEntry = System.Collections.DictionaryEntry
+
+open FSharpPlus
+open FSharpPlus.Data
 open Giraffe
+
 open Rssify.Core
-open Microsoft.Extensions.Options
 open Marten
 open Marten.Events
-open System.Text
 
 (*
  /rss?url=encodedUrl&date=encodedDateSelector&description=encodedDescriptionSelector..
@@ -48,28 +49,24 @@ module Web=
       Description     : string option
       Next            : string option
     }
-  let toSiteAndSelectors (s:IStore) (q:QueryString)=
+  let toSiteAndSelectors (q:QueryString)=
     let id = [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next] 
              |> List.choose id
              |> SHA512.ofList
              |> SiteId
     let link = Uri q.Link
-    let head = lazy( Seq.tryHead <| s.GetFeedItems id )
-    let defaultTitle () = match head.Value with | Some h -> h.Title | None -> link.PathAndQuery
-    let defaultDescription () = match head.Value with | Some h -> h.Description | None -> ""
-    let site = {
+    {
       Id          = id
-      Title       = Option.defaultWith defaultTitle q.FeedTitle
+      Title       = q.FeedTitle
       Link        = link
-      Description = Option.defaultWith defaultDescription q.FeedDescription
+      Description = q.FeedDescription
+      Selectors   = {
+        CssDate        = q.Date
+        CssTitle       = q.Title
+        CssDescription = q.Description
+        CssNext        = q.Next
+      }
     }
-    let selectors = {
-      Date        = q.Date
-      Title       = q.Title
-      Description = q.Description
-      Next        = q.Next
-    }
-    (site, selectors)
 
   let parsingErrorHandler err = RequestErrors.BAD_REQUEST err
   let tryBindQuery<'T> = tryBindQuery<'T> parsingErrorHandler None
@@ -77,18 +74,53 @@ module Web=
     let rss q : HttpHandler =
       fun next ctx ->
         let s = ctx.RequestServices.GetRequiredService<IStore>()
-        
-        let (site,selectors) = toSiteAndSelectors s q
-        let timestamp = s.GetTimestamp site.Id
-        match timestamp with
-        | Some t when (DateTime.UtcNow - t).TotalDays < 1.0 -> ()
-        | _ -> Site.munchAndStore site selectors s
+        let site = toSiteAndSelectors q
+        let visitAndItemsToXml (items:FeedItem seq) = async {
+          let head = Seq.tryHead items
+          let defaultWith thunk = function | None -> thunk() | some -> some
+          let defaultTitle () = match head with | Some h -> Some h.Title | None -> Some site.Link.PathAndQuery
+          let defaultDescription () = match head with | Some h -> Some h.Description | None -> None
+          let site = { site with Title = defaultWith defaultTitle site.Title
+                                 Description = defaultWith defaultDescription site.Description }
+          do! s.VisitSite site
+          let rssXml = Rss.feed site items
+          return xml (string rssXml) next ctx }
+
         let items = s.GetFeedItems site.Id
-        let rssXml = Rss.feed site items
-        xml (string rssXml) next ctx
+        items
+        |> Async.bind visitAndItemsToXml
+        |> Async.RunSynchronously // NOTE
 
     choose [ route "/" >=> (text "")
              route "/rss" >=> (tryBindQuery<QueryString> rss )]
+
+type TimedHostedPollingService(svc:IServiceProvider)=
+  let mutable timer=None
+  let opts = svc.GetRequiredService<IOptions<RssOptions>>().Value
+  let logger = svc.GetRequiredService<ILogger<TimedHostedPollingService>>()
+  let subscribe (s:IStore) = async {
+    let! sites = s.GetSitesToPoll()
+    for site in sites do
+        logger.LogInformation ("Starting to munch {SITE_TITLE}", site.Title)
+        do! Site.munchAndStore site s
+        logger.LogInformation ("Finished munching {SITE_TITLE}", site.Title) }
+
+  member __.OnTimeout(_:obj)=
+    logger.LogInformation "OnTimeout"
+    using (svc.CreateScope()) (fun scope->
+      let store = scope.ServiceProvider.GetRequiredService<IStore>()
+      subscribe store |> Async.RunSynchronously)
+  interface IHostedService with
+    member __.StartAsync _ =
+      logger.LogInformation ("Start polling {POLLING}", opts.PollTimeout)
+      timer <- Some <| new Timer(__.OnTimeout, null, TimeSpan.Zero, opts.PollTimeout); Task.CompletedTask
+    member __.StopAsync _ =
+      logger.LogInformation "Stop polling"
+      timer |> Option.iter (fun t -> t.Change(Timeout.Infinite, 0) |> ignore); Task.CompletedTask
+  interface IDisposable with
+    member __.Dispose() =
+      timer |> Option.iter (fun t -> t.Dispose())
+
 
 let errorHandler (ex : Exception) (logger : ILogger) =
   logger.LogError(EventId(), ex, "An unhandled exception has occurred while executing the request.")
@@ -100,12 +132,15 @@ let configureServices (ctx:WebHostBuilderContext) (services : IServiceCollection
       .AddGiraffe()
       .AddDataProtection() |> ignore
   services
+      .AddSingleton<IHostedService>(fun di -> new TimedHostedPollingService(di)
+                                              :> IHostedService)
       .AddOptions()
+      .Configure<RssOptions>(ctx.Configuration)
       .Configure<Web.StoreConfig>(ctx.Configuration) |> ignore
   let conn=ctx.Configuration.GetConnectionString "Default"
 
   if String.IsNullOrEmpty conn then
-    services.AddSingleton<IStore>(Store.inMemory()) |> ignore
+    services.AddSingleton<IStore>(fun di->Store.inMemory (di.GetRequiredService<IOptions<RssOptions>>().Value)) |> ignore
   else
     services
       .AddSingleton<DocumentStore>(fun di ->
@@ -113,20 +148,20 @@ let configureServices (ctx:WebHostBuilderContext) (services : IServiceCollection
           let config = di.GetRequiredService<IOptions<Web.StoreConfig>>()
           opt.Connection(conn)
           opt.AutoCreateSchemaObjects <- AutoCreate.All
-          opt.DatabaseSchemaName <- let name = config.Value.SchemaName in if isNull name then "rssify" else name
+          opt.DatabaseSchemaName <- config.Value.SchemaName
           opt.Events.StreamIdentity <- StreamIdentity.AsString
         )
       )
       .AddScoped<IDocumentSession>(fun di-> di.GetRequiredService<DocumentStore>().OpenSession())
       .AddScoped<IStore> (fun di->
         let session = di.GetRequiredService<IDocumentSession>()
-        Store.marten session
+        let opts = di.GetRequiredService<IOptions<RssOptions>>()
+        Store.marten session opts.Value
       ) |> ignore
 
 
 let configureLogging (loggerBuilder : ILoggingBuilder) =
-  loggerBuilder.AddFilter(fun lvl -> lvl.Equals LogLevel.Error)
-               .AddConsole()
+  loggerBuilder.AddConsole()
                .AddDebug() |> ignore
 
 [<EntryPoint>]

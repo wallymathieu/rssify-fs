@@ -52,7 +52,7 @@ module ISO8601=
 
 [<Fact>]
 let ``Can understand open graph format`` () =
-    let (date, title, description, next) = HtmlDocument.digest Selectors.Default onlyOpenGraph
+    let {Date=date; Title=title; Description=description; Next=_} = HtmlDocument.digest Selectors.Default onlyOpenGraph
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)
     Assert.Equal(Some (DateTime(2021,1,17,7,23,03)), date)
@@ -60,11 +60,11 @@ let ``Can understand open graph format`` () =
 [<Fact>]
 let ``Can understand tagged HTML`` () =
     let s = { 
-        Date=Some ".post-date"
-        Title=Some ".post-title"
-        Description=Some ".post-description"
-        Next=Some ".post-next" }
-    let (date, title, description, next) = HtmlDocument.digest s taggedHtml
+        CssDate=Some ".post-date"
+        CssTitle=Some ".post-title"
+        CssDescription=Some ".post-description"
+        CssNext=Some ".post-next" }
+    let {Date=date; Title=title; Description=description; Next=_} = HtmlDocument.digest s taggedHtml
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)
     Assert.Equal(Some (DateTime(2021,1,9)), date)

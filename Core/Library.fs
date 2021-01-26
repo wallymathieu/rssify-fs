@@ -20,13 +20,13 @@ open FSharpPlus
 open FSharp.Data
 
 type Selectors = {
-  Date : string option
-  Title : string option
-  Description : string option
-  Next : string option
+  CssDate : string option
+  CssTitle : string option
+  CssDescription : string option
+  CssNext : string option
 }
 with 
-  static member Default = { Date=None; Title=None; Description=None; Next=None }
+  static member Default = { CssDate=None; CssTitle=None; CssDescription=None; CssNext=None }
 
 type FeedItem = {
   Title: string
@@ -62,7 +62,7 @@ module DateTime=
            failwithf "Unknown TypeName %s" typename
     | None -> None
   let tryParse x = tryParseISO8601 x <|> tryRecognize x
-
+type Digested = { Date: DateTime option; Title: string option; Description: string option; Next: Uri option }
 module HtmlDocument=
   let digest (s:Selectors) (htmlDoc:HtmlDocument) =
     let selectInnerText selector =
@@ -82,14 +82,14 @@ module HtmlDocument=
     let ogTitle = metaSelect "og:title"
     let ogDescription = metaSelect "og:description"
 
-    let date =  s.Date >>= dateSelect <|> publishedTime
-    let title = s.Title >>= selectInnerText <|> ogTitle
-    let description = s.Description >>= selectInnerText <|> ogDescription
-    let next = s.Next >>= selectHref
-    (date, title, description, next)
+    let date =  s.CssDate >>= dateSelect <|> publishedTime
+    let title = s.CssTitle >>= selectInnerText <|> ogTitle
+    let description = s.CssDescription >>= selectInnerText <|> ogDescription
+    let next = s.CssNext >>= selectHref |> map Uri
+    {Date=date; Title=title; Description=description; Next = next}
 
 module FeedItem =
-  let ofValues (link:Uri,(date, title, description, _)) =
+  let ofValues (link:Uri,{ Date=date; Title=title; Description=description; Next=_}) =
     let numberAndLinkTitle = link.PathAndQuery.Replace("_"," ").Replace("-"," ").Replace("/"," ")
     {Title = Option.defaultValue numberAndLinkTitle title
      Date = Option.defaultValue DateTime.UtcNow date
@@ -98,68 +98,126 @@ module FeedItem =
   let date (fi:FeedItem) = fi.Date
 type SiteId = SiteId of int64
 type Site={Id:SiteId;
-           Title:string;
+           Title:string option;
            Link:Uri;
-           Description:string;}
+           Description:string option
+           Selectors: Selectors}
+
+[<CLIMutable>]
+type RssOptions = {
+  /// polling timespan
+  PollTimeout : TimeSpan
+  ItemsToPoll : int }
+
 type IStore =
-  abstract member GetTimestamp: SiteId -> DateTime option
-  abstract member GetFeedItems: SiteId -> FeedItem seq
-  abstract member AddFeedItems: SiteId*FeedItem seq -> unit
+  abstract member VisitSite: Site -> unit Async
+  abstract member GetSite: SiteId -> Site option Async
+  abstract member GetSitesToPoll: unit -> Site seq Async
+  abstract member GetFeedItems: SiteId -> FeedItem seq Async
+  abstract member AddPolledItems: SiteId*FeedItem seq -> unit Async
+
 module Store=
-  let inMemory()=
+  [<CLIMutable>]
+  type Sites = {
+      Id:int64
+      mutable LastVisit:DateTime
+      Site:Site
+      mutable Items:FeedItem list
+      mutable LastPolled:DateTime
+  }
+  with
+    static member GetSite (m:Sites) = m.Site
+    static member GetItems (m:Sites) = m.Items
+    static member GetLastPolled (m:Sites) = m.LastPolled
+
+  let inMemory (opts:RssOptions)=
     let mutable map = Map.empty
-    let mutable timestamps = Map.empty
     { new IStore with
-      member __.GetTimestamp (SiteId siteId) = Map.tryFind siteId timestamps
-      member __.GetFeedItems (SiteId siteId) = Map.tryFind siteId map |> Option.defaultValue Seq.empty
-      member __.AddFeedItems (SiteId siteId, items) = 
-          map <- Map.change siteId (function | Some v -> Some (Seq.append v items) | None -> Some items) map
-          timestamps <- Map.add siteId DateTime.UtcNow timestamps }
-    
+      member __.VisitSite s =
+        let (SiteId id) = s.Id
+        match Map.tryFind id map with 
+        | Some v -> v.LastVisit <- DateTime.UtcNow
+        | None -> map<-Map.add id { Id=id; LastVisit=DateTime.UtcNow; Site = s; Items=[]; LastPolled=DateTime.MinValue } map
+        async.Return ()
+      member __.GetSitesToPoll () =
+        let timeout = DateTime.UtcNow - opts.PollTimeout
+        Map.values map 
+        |> Seq.filter (fun s -> timeout > s.LastPolled)
+        |> Seq.map Sites.GetSite |> async.Return
+      member __.GetSite (SiteId siteId) =
+        Map.tryFind siteId map |> Option.map Sites.GetSite |> async.Return
+      member __.GetFeedItems (SiteId siteId) = 
+        Map.tryFind siteId map
+        |> (Option.map Sites.GetItems >> Option.map Seq.ofList >> Option.defaultValue Seq.empty) |> async.Return
+      member __.AddPolledItems (SiteId siteId, items) = 
+        let items = List.ofSeq items
+        match Map.tryFind siteId map with
+        | Some v ->
+          v.Items <- v.Items @ items
+          v.LastPolled <- DateTime.UtcNow
+        | None -> failwith "Should only poll a site that has been visited"
+        async.Return () }
+          
 
   open Marten
-
-  type private TimeStamps={mutable Id:string; mutable Value:DateTime}
-  with
-    static member GetValue (m:TimeStamps) = m.Value
-  type private FeedItems={mutable Id:string; mutable Items:FeedItem list}
-  with
-    static member GetItems (m:FeedItems) = m.Items
-  let marten (session:IDocumentSession)=
+  
+  let marten (session:IDocumentSession) (opts:RssOptions)=
       { new IStore with
-        member __.GetTimestamp (SiteId siteId) = Session.loadByString<TimeStamps> (string siteId) session |> map TimeStamps.GetValue
-        member __.GetFeedItems (SiteId siteId) = Session.loadByString<FeedItems> (string siteId) session |> map FeedItems.GetItems |> map Seq.ofList |> Option.defaultValue Seq.empty
-        member __.AddFeedItems (SiteId siteId, items) =
+        member __.VisitSite s = async {
+          let (SiteId id) = s.Id
+          match! Session.loadByInt64Async<Sites> (id) session with 
+          | Some v -> v.LastVisit <- DateTime.UtcNow; session.Store v
+          | None -> session.Store { Id=id; LastVisit=DateTime.UtcNow; Site = s; Items=[]; LastPolled=DateTime.MinValue }
+          do! Session.saveChangesAsync session }
+        member __.GetSite (SiteId siteId) =
+          Session.loadByInt64Async<Sites> siteId session |> (Async.map << map) Sites.GetSite
+        member __.GetSitesToPoll () =
+          let timeout = DateTime.UtcNow - opts.PollTimeout
+          Session.query<Sites> session
+          |> Queryable.filter <@ fun s -> timeout > s.LastPolled @>
+          |> Queryable.take opts.ItemsToPoll
+          |> Queryable.toListAsync
+          |> (Async.map<<Seq.map) (fun s -> s.Site)
+        member __.GetFeedItems (SiteId siteId) = Session.loadByInt64Async<Sites> siteId session
+                                                 |> (Async.map) (Option.map Sites.GetItems
+                                                                 >> map Seq.ofList >> Option.defaultValue Seq.empty)
+        member __.AddPolledItems (SiteId siteId, items) = async {
           let items = List.ofSeq items
-          let id = string siteId
-          match Session.loadByString<FeedItems> (id) session with 
-          | Some itemsInDb -> itemsInDb.Items<-itemsInDb.Items @ items
-          | None -> session.Store { Id=id; Items=items }
-          session.Store { Id=id; Value = DateTime.UtcNow }
-          session.SaveChanges() }
+          match! Session.loadByInt64Async<Sites> siteId session with 
+          | Some v ->
+            v.Items <- v.Items @ items
+            v.LastPolled <- DateTime.UtcNow
+            session.Store v
+          | None -> failwith "Should only poll a site that has been visited"
+          do! Session.saveChangesAsync session } }
 
 
 module Site=
   /// iterate on site as long as there is a next url
-  let munch (link:Uri) (s:Selectors) = seq {
-    let mutable head = HtmlDocument.Load (string link) |> HtmlDocument.digest s
-    yield (link, head)
-    let nextLink = let (_,_,_,n) = head in n
+  let munch (link:Uri) (s:Selectors) = async {
+    let digest = HtmlDocument.digest s
+    let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest
+    let mutable result = ResizeArray()
+    result.Add (link, head)
+    let mutable nextLink = head.Next
     while nextLink.IsSome do
       let link = nextLink.Value
-      head <- HtmlDocument.Load link |> HtmlDocument.digest s
-      yield (Uri(link), head)
+      let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest
+      nextLink <- head.Next
+      result.Add (link, head)
+    return result :> seq<_>
   }
   /// munch items for a site
-  let munchAndStore (site:Site) (s:Selectors) (store:IStore) =
-    let last = store.GetFeedItems site.Id |> Seq.sortByDescending FeedItem.date |> Seq.tryHead
+  let munchAndStore (site:Site) (store:IStore) = async {
+    let s = site.Selectors
+    let! last = store.GetFeedItems site.Id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
     match last with
     | Some item ->
-      let res = munch item.Link s |> map FeedItem.ofValues |> Seq.skip 1
-      store.AddFeedItems (site.Id, res)
+      let! res = munch item.Link s |> Async.map (Seq.map FeedItem.ofValues >> Seq.skip 1)
+      do! store.AddPolledItems (site.Id, res)
     | None -> 
-      let res = munch site.Link s |> map FeedItem.ofValues
-      store.AddFeedItems (site.Id, res)
+      let! res = munch site.Link s |> Async.map (Seq.map FeedItem.ofValues)
+      do! store.AddPolledItems (site.Id, res) }
 module Rss=
   // from: http://www.fssnip.net/7QI/title/Generate-rss-feed-from-F-record-items
   open System.Xml.Linq
@@ -185,12 +243,9 @@ module Rss=
       XDeclaration("1.0", "utf-8", "yes"),
         XElement(xn "rss",
           XAttribute(xn "version", "2.0"),
-          elem "title" site.Title,
+          elem "title" <| Option.defaultValue "" site.Title,
           elem "link" <| string site.Link,
-          elem "description" site.Description,
+          elem "description" <| Option.defaultValue "" site.Description,
           elem "language" "en-us", // TODO: fix
           XElement(xn "channel", elems)
         ) |> box)
-
-
-    
