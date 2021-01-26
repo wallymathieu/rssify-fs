@@ -20,11 +20,18 @@ open Rssify.Core
 open Microsoft.Extensions.Options
 open Marten
 open Marten.Events
+open System.Text
 
 (*
  /rss?url=encodedUrl&date=encodedDateSelector&description=encodedDescriptionSelector..
 *)
 module Web=
+  let xml (s:string) : HttpHandler =
+    let bytes = Encoding.UTF8.GetBytes s
+    fun (_ : HttpFunc) (ctx : HttpContext) ->
+        ctx.SetContentType "application/xml; charset=utf-8"
+        ctx.WriteBytesAsync bytes
+
   [<CLIMutable>]
   type StoreConfig = {
 
@@ -79,6 +86,7 @@ module Web=
         let items = s.GetFeedItems site.Id
         let rssXml = Rss.feed site items
         xml (string rssXml) next ctx
+
     choose [ route "/" >=> (text "")
              route "/rss" >=> (tryBindQuery<QueryString> rss )]
 
