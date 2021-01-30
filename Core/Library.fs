@@ -97,8 +97,7 @@ module FeedItem =
      Link = link }
   let date (fi:FeedItem) = fi.Date
 type SiteId = SiteId of int64
-type Site={Id:SiteId;
-           Title:string option;
+type Site={Title:string option;
            Link:Uri;
            Description:string option
            Selectors: Selectors}
@@ -110,9 +109,9 @@ type RssOptions = {
   ItemsToPoll : int }
 
 type IStore =
-  abstract member VisitSite: Site -> unit Async
+  abstract member VisitSite: SiteId*Site -> unit Async
   abstract member GetSite: SiteId -> Site option Async
-  abstract member GetSitesToPoll: unit -> Site seq Async
+  abstract member GetSitesToPoll: unit -> (SiteId*Site) seq Async
   abstract member GetFeedItems: SiteId -> FeedItem seq Async
   abstract member AddPolledItems: SiteId*FeedItem seq -> unit Async
 
@@ -133,8 +132,7 @@ module Store=
   let inMemory (opts:RssOptions)=
     let mutable map = Map.empty
     { new IStore with
-      member __.VisitSite (s:Site) =
-        let (SiteId id) = s.Id
+      member __.VisitSite (SiteId id,s:Site) =
         match Map.tryFind id map with 
         | Some v -> v.LastVisit <- DateTime.UtcNow
         | None -> map<-Map.add id { Id=id; LastVisit=DateTime.UtcNow; Site = s; Items=[]; LastPolled=DateTime.MinValue } map
@@ -143,7 +141,7 @@ module Store=
         let timeout = DateTime.UtcNow - opts.PollTimeout
         Map.values map 
         |> Seq.filter (fun s -> timeout > s.LastPolled)
-        |> Seq.map Sites.GetSite |> async.Return
+        |> Seq.map (fun s->(SiteId s.Id,Sites.GetSite s)) |> async.Return
       member __.GetSite (SiteId siteId) =
         Map.tryFind siteId map |> Option.map Sites.GetSite |> async.Return
       member __.GetFeedItems (SiteId siteId) = 
@@ -163,8 +161,7 @@ module Store=
   
   let marten (session:IDocumentSession) (opts:RssOptions)=
       { new IStore with
-        member __.VisitSite (s:Site) = async {
-          let (SiteId id) = s.Id
+        member __.VisitSite (SiteId id,s:Site) = async {
           match! Session.loadByInt64Async<Sites> (id) session with 
           | Some v -> v.LastVisit <- DateTime.UtcNow; session.Store v
           | None -> session.Store { Id=id; LastVisit=DateTime.UtcNow; Site = s; Items=[]; LastPolled=DateTime.MinValue }
@@ -177,13 +174,13 @@ module Store=
           |> Queryable.filter <@ fun s -> timeout > s.LastPolled @>
           |> Queryable.take opts.ItemsToPoll
           |> Queryable.toListAsync
-          |> (Async.map<<Seq.map) (fun s -> s.Site)
+          |> (Async.map<<Seq.map) (fun s -> (SiteId s.Id,Sites.GetSite s))
         member __.GetFeedItems (SiteId siteId) = Session.loadByInt64Async<Sites> siteId session
                                                  |> (Async.map) (Option.map Sites.GetItems
                                                                  >> map Seq.ofList >> Option.defaultValue Seq.empty)
         member __.AddPolledItems (SiteId siteId, items) = async {
           let items = List.ofSeq items
-          match! Session.loadByInt64Async<Sites> siteId session with 
+          match! Session.loadByInt64Async<Sites> siteId session with
           | Some v ->
             v.Items <- v.Items @ items
             v.LastPolled <- DateTime.UtcNow
@@ -208,16 +205,16 @@ module Site=
     return result :> seq<_>
   }
   /// munch items for a site
-  let munchAndStore (site:Site) (store:IStore) = async {
+  let munchAndStore (store:IStore) (id,site:Site) = async {
     let s = site.Selectors
-    let! last = store.GetFeedItems site.Id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
+    let! last = store.GetFeedItems id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
     match last with
     | Some item ->
       let! res = munch item.Link s |> Async.map (Seq.map FeedItem.ofValues >> Seq.skip 1)
-      do! store.AddPolledItems (site.Id, res)
+      do! store.AddPolledItems (id, res)
     | None -> 
       let! res = munch site.Link s |> Async.map (Seq.map FeedItem.ofValues)
-      do! store.AddPolledItems (site.Id, res) }
+      do! store.AddPolledItems (id, res) }
 module Rss=
   // from: http://www.fssnip.net/7QI/title/Generate-rss-feed-from-F-record-items
   open System.Xml.Linq

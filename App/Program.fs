@@ -50,13 +50,8 @@ module Web=
       Next            : string option
     }
   let toSiteAndSelectors (q:QueryString)=
-    let id = [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next] 
-             |> List.choose id
-             |> SHA512.ofList
-             |> SiteId
     let link = Uri q.Link
     {
-      Id          = id
       Title       = q.FeedTitle
       Link        = link
       Description = q.FeedDescription
@@ -67,7 +62,11 @@ module Web=
         CssNext        = q.Next
       }
     }
-
+  let queryToId (q:QueryString) =
+            [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next]
+            |> List.choose id
+            |> SHA512.ofList
+            |> SiteId
   let parsingErrorHandler err = RequestErrors.BAD_REQUEST err
   let tryBindQuery<'T> = tryBindQuery<'T> parsingErrorHandler None
   let webApp =
@@ -82,15 +81,16 @@ module Web=
       fun next ctx ->
         let s = ctx.RequestServices.GetRequiredService<IStore>()
         let site = toSiteAndSelectors q
+        let id = queryToId q
         let visitAndItemsToXml (items:FeedItem seq) = async {
           let head = Seq.tryHead items
           let site = modifySiteWithHead site head
-          do! s.VisitSite site
+          do! s.VisitSite (id,site)
           let rssXml = Rss.feed site items
-          let (SiteId id) = site.Id
+          let (SiteId id) = id
           return (setHttpHeader "X-siteId" (string id) >=> xml (string rssXml)) next ctx }
 
-        let items = s.GetFeedItems site.Id
+        let items = s.GetFeedItems id
         items
         |> Async.bind visitAndItemsToXml
         |> Async.RunSynchronously // NOTE
@@ -104,7 +104,7 @@ module Web=
           | Some site ->
             let head = Seq.tryHead items
             let site = modifySiteWithHead site head
-            do! s.VisitSite site
+            do! s.VisitSite (siteId,site)
             let rssXml = Rss.feed site items
             return xml (string rssXml) next ctx
           | None->
@@ -125,9 +125,9 @@ type TimedHostedPollingService(svc:IServiceProvider)=
   let logger = svc.GetRequiredService<ILogger<TimedHostedPollingService>>()
   let subscribe (s:IStore) = async {
     let! sites = s.GetSitesToPoll()
-    for site in sites do
+    for (id,site) in sites do
         logger.LogInformation ("Starting to munch {SITE_TITLE}", site.Title)
-        do! Site.munchAndStore site s
+        do! Site.munchAndStore s (id, site)
         logger.LogInformation ("Finished munching {SITE_TITLE}", site.Title) }
 
   member __.OnTimeout(_:obj)=
