@@ -1,4 +1,4 @@
-﻿namespace Rssify.Core
+namespace Rssify.Core
 open System
 open System.Text
 open System.Security.Cryptography
@@ -116,7 +116,6 @@ type IStore =
   abstract member AddPolledItems: SiteId*FeedItem seq -> unit Async
 
 module Store=
-  [<CLIMutable>]
   type Sites = {
       Id:int64
       mutable LastVisit:DateTime
