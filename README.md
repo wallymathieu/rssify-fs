@@ -36,3 +36,7 @@ Locally:
 ```bash
 (cd App; export ASPNETCORE_URLS=http://localhost:5000; dotnet run --watch)
 ```
+
+## Deploy
+
+See [docs](https://docs.microsoft.com/en-us/aspnet/core/host-and-deploy/linux-nginx?view=aspnetcore-5.0)

@@ -133,7 +133,7 @@ module Store=
   let inMemory (opts:RssOptions)=
     let mutable map = Map.empty
     { new IStore with
-      member __.VisitSite s =
+      member __.VisitSite (s:Site) =
         let (SiteId id) = s.Id
         match Map.tryFind id map with 
         | Some v -> v.LastVisit <- DateTime.UtcNow
@@ -163,7 +163,7 @@ module Store=
   
   let marten (session:IDocumentSession) (opts:RssOptions)=
       { new IStore with
-        member __.VisitSite s = async {
+        member __.VisitSite (s:Site) = async {
           let (SiteId id) = s.Id
           match! Session.loadByInt64Async<Sites> (id) session with 
           | Some v -> v.LastVisit <- DateTime.UtcNow; session.Store v

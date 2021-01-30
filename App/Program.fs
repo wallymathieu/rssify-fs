@@ -71,27 +71,52 @@ module Web=
   let parsingErrorHandler err = RequestErrors.BAD_REQUEST err
   let tryBindQuery<'T> = tryBindQuery<'T> parsingErrorHandler None
   let webApp =
+    let modifySiteWithHead (site:Site) (head:FeedItem option)=
+      let defaultWith thunk = function | None -> thunk() | some -> some
+      let defaultTitle () = match head with | Some h -> Some h.Title | None -> Some site.Link.PathAndQuery
+      let defaultDescription () = match head with | Some h -> Some h.Description | None -> None
+      { site with Title = defaultWith defaultTitle site.Title
+                          Description = defaultWith defaultDescription site.Description }
+
     let rss q : HttpHandler =
       fun next ctx ->
         let s = ctx.RequestServices.GetRequiredService<IStore>()
         let site = toSiteAndSelectors q
         let visitAndItemsToXml (items:FeedItem seq) = async {
           let head = Seq.tryHead items
-          let defaultWith thunk = function | None -> thunk() | some -> some
-          let defaultTitle () = match head with | Some h -> Some h.Title | None -> Some site.Link.PathAndQuery
-          let defaultDescription () = match head with | Some h -> Some h.Description | None -> None
-          let site = { site with Title = defaultWith defaultTitle site.Title
-                                 Description = defaultWith defaultDescription site.Description }
+          let site = modifySiteWithHead site head
           do! s.VisitSite site
           let rssXml = Rss.feed site items
-          return xml (string rssXml) next ctx }
+          let (SiteId id) = site.Id
+          return (setHttpHeader "X-siteId" (string id) >=> xml (string rssXml)) next ctx }
 
         let items = s.GetFeedItems site.Id
         items
         |> Async.bind visitAndItemsToXml
         |> Async.RunSynchronously // NOTE
 
+    let rssI (id:int64) : HttpHandler =
+      let siteId = SiteId id
+      fun next ctx ->
+        let s = ctx.RequestServices.GetRequiredService<IStore>()
+        let visitAndItemsToXml (items:FeedItem seq) = async {
+          match! s.GetSite siteId with
+          | Some site ->
+            let head = Seq.tryHead items
+            let site = modifySiteWithHead site head
+            do! s.VisitSite site
+            let rssXml = Rss.feed site items
+            return xml (string rssXml) next ctx
+          | None->
+            return RequestErrors.NOT_FOUND "Not Found" next ctx }
+        let items = s.GetFeedItems siteId
+        items
+        |> Async.bind visitAndItemsToXml
+        |> Async.RunSynchronously // NOTE
+
+
     choose [ route "/" >=> (text "")
+             routef "/rss/%d" rssI
              route "/rss" >=> (tryBindQuery<QueryString> rss )]
 
 type TimedHostedPollingService(svc:IServiceProvider)=
