@@ -127,8 +127,10 @@ type TimedHostedPollingService(svc:IServiceProvider)=
     let! sites = s.GetSitesToPoll()
     for (id,site) in sites do
         logger.LogInformation ("Starting to munch {SITE_TITLE}", site.Title)
-        do! Site.munchAndStore s (id, site)
-        logger.LogInformation ("Finished munching {SITE_TITLE}", site.Title) }
+        try
+          do! Site.munchAndStore s (id, site)
+          logger.LogInformation ("Finished munching {SITE_TITLE}", site.Title)
+        with | ex -> logger.LogError (ex, "Failed to munch {SITE_TITLE}", site.Title) }
 
   member __.OnTimeout(_:obj)=
     logger.LogInformation "OnTimeout"
