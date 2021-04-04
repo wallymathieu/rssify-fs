@@ -62,7 +62,7 @@ module DateTime=
            failwithf "Unknown TypeName %s" typename
     | None -> None
   let tryParse x = tryParseISO8601 x <|> tryRecognize x
-type Digested = { Date: DateTime option; Title: string option; Description: string option; Next: Uri option }
+type Digested = { Date: DateTime; Title: string option; Description: string option; Next: Uri option }
 module HtmlDocument=
   let digest (s:Selectors) (htmlDoc:HtmlDocument) =
     let selectInnerText selector =
@@ -82,7 +82,7 @@ module HtmlDocument=
     let ogTitle = metaSelect "og:title"
     let ogDescription = metaSelect "og:description"
 
-    let date =  s.CssDate >>= dateSelect <|> publishedTime
+    let date =  s.CssDate >>= dateSelect <|> publishedTime |> Option.defaultValue DateTime.UtcNow
     let title = s.CssTitle >>= selectInnerText <|> ogTitle
     let description = s.CssDescription >>= selectInnerText <|> ogDescription
     let next = s.CssNext >>= selectHref |> map Uri
@@ -92,7 +92,7 @@ module FeedItem =
   let ofValues (link:Uri,{ Date=date; Title=title; Description=description; Next=_}) =
     let numberAndLinkTitle = link.PathAndQuery.Replace("_"," ").Replace("-"," ").Replace("/"," ")
     {Title = Option.defaultValue numberAndLinkTitle title
-     Date = Option.defaultValue DateTime.UtcNow date
+     Date = date
      Description = Option.defaultValue "" description
      Link = link }
   let date (fi:FeedItem) = fi.Date
