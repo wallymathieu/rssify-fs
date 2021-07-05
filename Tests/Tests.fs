@@ -69,3 +69,25 @@ let ``Can understand tagged HTML`` () =
     Assert.Equal(Some "TheDescription", description)
     Assert.Equal(DateTime(2021,1,9), date)
 
+let defaultSite={ Title = None; Link=Uri("https://somesite.com"); Description = None; Selectors = Selectors.Default }
+let defaultOptions = { PollTimeout = TimeSpan(0,1,0); VisitTimeout = TimeSpan(30,0,0,0); ItemsToPoll = 10 }
+open FSharp.Quotations.Evaluator
+open Store
+let timeoutFilter = QuotationEvaluator.Evaluate <| getTimeoutFilter defaultOptions 
+let now =  DateTime.UtcNow
+[<Fact>]
+let ``A recently visited site that has not been polled in a while should be polled`` () =
+  let site = { Id=1L; LastVisit = now; LastPolled = now.AddDays(-100.0); Site=defaultSite; Items=[] }
+  Assert.True( timeoutFilter site )
+[<Fact>]
+let ``A recently visited site that has been polled recently should not be polled`` () =
+  let site = { Id=1L; LastVisit = now; LastPolled = now; Site=defaultSite; Items=[] }
+  Assert.False( timeoutFilter site )
+[<Fact>]
+let ``A not visited site that has not been polled in a while should not be polled`` () =
+  let site = { Id=1L; LastVisit = now.AddYears(-10); LastPolled = now.AddDays(-100.0); Site=defaultSite; Items=[] }
+  Assert.False( timeoutFilter site )
+[<Fact>]
+let ``A not visited site that has been polled recently should not be polled`` () =
+  let site = { Id=1L; LastVisit = now.AddYears(-10); LastPolled = now; Site=defaultSite; Items=[] }
+  Assert.False( timeoutFilter site )

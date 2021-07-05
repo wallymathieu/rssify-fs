@@ -18,6 +18,7 @@ module String=
 
 open FSharpPlus
 open FSharp.Data
+open Microsoft.FSharp.Quotations
 
 type Selectors = {
   CssDate : string option
@@ -106,6 +107,8 @@ type Site={Title:string option;
 type RssOptions = {
   /// polling timespan
   PollTimeout : TimeSpan
+  /// Visit timespan : do not poll sites that do not have any visits older 
+  VisitTimeout : TimeSpan
   ItemsToPoll : int }
 
 type IStore =
@@ -116,6 +119,7 @@ type IStore =
   abstract member AddPolledItems: SiteId*FeedItem seq -> unit Async
 
 module Store=
+  open FSharp.Quotations.Evaluator
   type Sites = {
       Id:int64
       mutable LastVisit:DateTime
@@ -127,6 +131,11 @@ module Store=
     static member GetSite (m:Sites) = m.Site
     static member GetItems (m:Sites) = m.Items
     static member GetLastPolled (m:Sites) = m.LastPolled
+  let getTimeoutFilter (opts:RssOptions) = 
+    let timeout = DateTime.UtcNow - opts.PollTimeout
+    let lastVisitTimeout = DateTime.UtcNow - opts.VisitTimeout
+    <@ fun s -> timeout > s.LastPolled && lastVisitTimeout < s.LastVisit @>
+ 
 
   let inMemory (opts:RssOptions)=
     let mutable map = Map.empty
@@ -137,9 +146,9 @@ module Store=
         | None -> map<-Map.add id { Id=id; LastVisit=DateTime.UtcNow; Site = s; Items=[]; LastPolled=DateTime.MinValue } map
         async.Return ()
       member __.GetSitesToPoll () =
-        let timeout = DateTime.UtcNow - opts.PollTimeout
+        let timeoutFilter = QuotationEvaluator.Evaluate <| getTimeoutFilter opts 
         Map.values map 
-        |> Seq.filter (fun s -> timeout > s.LastPolled)
+        |> Seq.filter timeoutFilter
         |> Seq.map (fun s->(SiteId s.Id,Sites.GetSite s)) |> async.Return
       member __.GetSite (SiteId siteId) =
         Map.tryFind siteId map |> Option.map Sites.GetSite |> async.Return
@@ -168,9 +177,9 @@ module Store=
         member __.GetSite (SiteId siteId) =
           Session.loadByInt64Async<Sites> siteId session |> (Async.map << map) Sites.GetSite
         member __.GetSitesToPoll () =
-          let timeout = DateTime.UtcNow - opts.PollTimeout
+          let timeoutFilter = getTimeoutFilter opts 
           Session.query<Sites> session
-          |> Queryable.filter <@ fun s -> timeout > s.LastPolled @>
+          |> Queryable.filter timeoutFilter 
           |> Queryable.take opts.ItemsToPoll
           |> Queryable.toListAsync
           |> (Async.map<<Seq.map) (fun s -> (SiteId s.Id,Sites.GetSite s))
