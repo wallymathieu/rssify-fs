@@ -91,3 +91,26 @@ let ``A not visited site that has not been polled in a while should not be polle
 let ``A not visited site that has been polled recently should not be polled`` () =
   let site = { Id=1L; LastVisit = now.AddYears(-10); LastPolled = now; Site=defaultSite; Items=[] }
   Assert.False( timeoutFilter site )
+
+[<Fact>]
+let ``A one item feed can be generated`` () =
+  let splitLines str= split ["\n";"\r"] str |> filter (not << String.IsNullOrEmpty)
+  let site={ Title = Some "SiteTitle"; Link=Uri("https://somesite.com"); Description = Some "SiteDescription"; Selectors = Selectors.Default }
+  let items = [{ Title="Title"; Date=DateTime(2000,1,1); Description="Description"; Link=Uri("https://somesite.com/somefeedlikething1") }] 
+  let rssFeed = Rss.feed site items
+  Assert.Equal<string> (splitLines """<rss version="2.0">
+  <title>SiteTitle</title>
+  <link>https://somesite.com/</link>
+  <description>SiteDescription</description>
+  <language>en-us</language>
+  <channel>
+    <item>
+      <title>Title</title>
+      <link>https://somesite.com/somefeedlikething1</link>
+      <guid>89a49a1b-1290-c502-f7b7-fab23773deb8</guid>
+      <pubDate>Sat, 01 Jan 2000 00:00:00 GMT</pubDate>
+      <description>Description</description>
+    </item>
+  </channel>
+</rss>
+""", splitLines <| string rssFeed )
