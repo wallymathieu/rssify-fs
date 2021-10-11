@@ -94,16 +94,16 @@ let ``A not visited site that has been polled recently should not be polled`` ()
 
 [<Fact>]
 let ``A one item feed can be generated`` () =
-  let splitLines str= split ["\n";"\r"] str |> filter (not << String.IsNullOrEmpty)
+  let trimSplitLines str= split ["\n";"\r"] str |> filter (not << String.IsNullOrEmpty) |> map (fun s->s.Trim())
   let site={ Title = Some "SiteTitle"; Link=Uri("https://somesite.com"); Description = Some "SiteDescription"; Selectors = Selectors.Default }
   let items = [{ Title="Title"; Date=DateTime(2000,1,1); Description="Description"; Link=Uri("https://somesite.com/somefeedlikething1") }] 
   let rssFeed = Rss.feed site items
-  Assert.Equal<string> (splitLines """<rss version="2.0">
-  <title>SiteTitle</title>
-  <link>https://somesite.com/</link>
-  <description>SiteDescription</description>
-  <language>en-us</language>
+  Assert.Equal<string> (trimSplitLines """<rss version="2.0">
   <channel>
+    <title>SiteTitle</title>
+    <link>https://somesite.com/</link>
+    <description>SiteDescription</description>
+    <language>en-us</language>
     <item>
       <title>Title</title>
       <link>https://somesite.com/somefeedlikething1</link>
@@ -113,4 +113,4 @@ let ``A one item feed can be generated`` () =
     </item>
   </channel>
 </rss>
-""", splitLines <| string rssFeed )
+""", trimSplitLines <| string rssFeed )

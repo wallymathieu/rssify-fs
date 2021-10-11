@@ -248,9 +248,10 @@ module Rss=
       XDeclaration("1.0", "utf-8", "yes"),
         XElement(xn "rss",
           XAttribute(xn "version", "2.0"),
-          elem "title" <| Option.defaultValue "" site.Title,
-          elem "link" <| string site.Link,
-          elem "description" <| Option.defaultValue "" site.Description,
-          elem "language" "en-us", // TODO: fix
-          XElement(xn "channel", elems)
+          XElement(xn "channel", 
+            elem "title" <| Option.defaultValue "" site.Title,
+            elem "link" <| string site.Link,
+            elem "description" <| Option.defaultValue "" site.Description,
+            elem "language" "en-us", // TODO: fix
+            elems)
         ) |> box)
