@@ -63,7 +63,8 @@ let ``Can understand tagged HTML`` () =
         CssDate=Some ".post-date"
         CssTitle=Some ".post-title"
         CssDescription=Some ".post-description"
-        CssNext=Some ".post-next" }
+        CssNext=Some ".post-next"
+        CssList=None }
     let {Date=date; Title=title; Description=description; Next=_} = HtmlDocument.digest s taggedHtml
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)

@@ -25,9 +25,10 @@ type Selectors = {
   CssTitle : string option
   CssDescription : string option
   CssNext : string option
+  CssList : string option
 }
 with 
-  static member Default = { CssDate=None; CssTitle=None; CssDescription=None; CssNext=None }
+  static member Default = { CssDate=None; CssTitle=None; CssDescription=None; CssNext=None; CssList=None }
 
 type FeedItem = {
   Title: string
@@ -63,7 +64,7 @@ module DateTime=
            failwithf "Unknown TypeName %s" typename
     | None -> None
   let tryParse x = tryParseISO8601 x <|> tryRecognize x
-type Digested = { Date: DateTime; Title: string option; Description: string option; Next: Uri option }
+type Digested = { Date: DateTime; Title: string option; Description: string option; Next: Uri option; List: Uri list option }
 module HtmlDocument=
   let digest (s:Selectors) (htmlDoc:HtmlDocument) =
     let selectInnerText selector =
@@ -72,6 +73,8 @@ module HtmlDocument=
     let selectHref selector =
       htmlDoc.CssSelect selector |> List.tryHead
       |> map (HtmlNode.attributeValue "href")
+    let selectHrefs (selector:string) =
+      htmlDoc.CssSelect selector |> List.map (HtmlNode.attributeValue "href")
 
     let metaSelect value =
       htmlDoc.CssSelect "meta"
@@ -87,7 +90,8 @@ module HtmlDocument=
     let title = s.CssTitle >>= selectInnerText <|> ogTitle
     let description = s.CssDescription >>= selectInnerText <|> ogDescription
     let next = s.CssNext >>= selectHref |> map Uri
-    {Date=date; Title=title; Description=description; Next = next}
+    let list = None // s.CssList >>= selectHrefs |> map Uri
+    {Date=date; Title=title; Description=description; Next = next; List = list}
 
 module FeedItem =
   let ofValues (link:Uri,{ Date=date; Title=title; Description=description; Next=_}) =
@@ -198,8 +202,22 @@ module Store=
 
 
 module Site=
+  /// munch a list of links found on the page
+  let munchList (link:Uri) (s:Selectors) (predicate:Uri->bool) : (Uri*Digested) seq Async= async {
+    let digest = HtmlDocument.digest s
+    let mapUrlToDigested url =
+      let urlAndDigested doc = (url, digest doc)
+      HtmlDocument.AsyncLoad (string url) |> (Async.map urlAndDigested)  
+    let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest 
+    match head.List with
+    | Some l ->
+      let! mapped = filter predicate l |> map mapUrlToDigested |> Seq.toList |> Async.Sequential  
+      return mapped :> seq<_>
+    | None -> 
+      return [] :> seq<_>
+  }
   /// iterate on site as long as there is a next url
-  let munch (link:Uri) (s:Selectors) = async {
+  let munch (link:Uri) (s:Selectors) = async { 
     let digest = HtmlDocument.digest s
     let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest
     let mutable result = ResizeArray()
@@ -210,19 +228,32 @@ module Site=
       let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest
       nextLink <- head.Next
       result.Add (link, head)
-    return result :> seq<_>
+    return result :> seq<_> 
   }
   /// munch items for a site
   let munchAndStore (store:IStore) (id,site:Site) = async {
     let s = site.Selectors
-    let! last = store.GetFeedItems id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
-    match last with
-    | Some item ->
-      let! res = munch item.Link s |> Async.map (Seq.map FeedItem.ofValues >> Seq.skip 1)
-      do! store.AddPolledItems (id, res)
-    | None -> 
-      let! res = munch site.Link s |> Async.map (Seq.map FeedItem.ofValues)
-      do! store.AddPolledItems (id, res) }
+    match s.CssNext, s.CssList with
+    | Some _ , _->
+      let! last = store.GetFeedItems id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
+      match last with
+      | Some item ->
+        let! res = munch item.Link s |> Async.map (Seq.map FeedItem.ofValues >> Seq.skip 1)
+        do! store.AddPolledItems (id, res)
+      | None -> 
+        let! res = munch site.Link s |> Async.map (Seq.map FeedItem.ofValues)
+        do! store.AddPolledItems (id, res) 
+    | _     , Some _ ->
+        let! list = store.GetFeedItems id
+        let whereNotAlreadyStored =
+          let link (i:FeedItem) = string i.Link
+          let links = map link list |> Set.ofSeq 
+          let notAlreadyStored link = not <| Set.contains (string link) links 
+          notAlreadyStored
+        let! res = munchList site.Link s whereNotAlreadyStored |> Async.map (Seq.map FeedItem.ofValues)
+        do! store.AddPolledItems (id, res)
+    | _     , _      -> failwith "Invalid site configuration, should result in bad request" 
+  }
 module Rss=
   // from: http://www.fssnip.net/7QI/title/Generate-rss-feed-from-F-record-items
   open System.Xml.Linq

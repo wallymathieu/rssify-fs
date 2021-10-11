@@ -48,6 +48,7 @@ module Web=
       Title           : string option
       Description     : string option
       Next            : string option
+      List            : string option
     }
   let toSiteAndSelectors (q:QueryString)=
     let link = Uri q.Link
@@ -60,10 +61,11 @@ module Web=
         CssTitle       = q.Title
         CssDescription = q.Description
         CssNext        = q.Next
+        CssList        = q.List
       }
     }
   let queryToId (q:QueryString) =
-            [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next]
+            [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next;q.List]
             |> List.choose id
             |> SHA512.ofList
             |> SiteId
