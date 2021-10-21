@@ -18,7 +18,6 @@ module String=
 
 open FSharpPlus
 open FSharp.Data
-open Microsoft.FSharp.Quotations
 
 type Selectors = {
   CssDate : string option
@@ -90,7 +89,7 @@ module HtmlDocument=
     let title = s.CssTitle >>= selectInnerText <|> ogTitle
     let description = s.CssDescription >>= selectInnerText <|> ogDescription
     let next = s.CssNext >>= selectHref |> map Uri
-    let list = None // s.CssList >>= selectHrefs |> map Uri
+    let list = map selectHrefs s.CssList |> map (map Uri)
     {Date=date; Title=title; Description=description; Next = next; List = list}
 
 module FeedItem =
@@ -208,10 +207,10 @@ module Site=
     let mapUrlToDigested url =
       let urlAndDigested doc = (url, digest doc)
       HtmlDocument.AsyncLoad (string url) |> (Async.map urlAndDigested)  
-    let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest 
+    let! head = HtmlDocument.AsyncLoad (string link) |> Async.map digest
     match head.List with
     | Some l ->
-      let! mapped = filter predicate l |> map mapUrlToDigested |> Seq.toList |> Async.Sequential  
+      let! mapped = filter predicate (List.rev l) |> map mapUrlToDigested |> Seq.toList |> Async.Sequential  
       return mapped :> seq<_>
     | None -> 
       return [] :> seq<_>
