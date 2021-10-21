@@ -55,7 +55,7 @@ let ``Can understand open graph format`` () =
     let {Date=date; Title=title; Description=description; Next=_} = HtmlDocument.digest Selectors.Default onlyOpenGraph
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)
-    Assert.Equal(DateTime(2021,1,17,7,23,03), date)
+    Assert.Equal(Some <| DateTime(2021,1,17,7,23,03), date)
 
 [<Fact>]
 let ``Can understand tagged HTML`` () =
@@ -68,7 +68,7 @@ let ``Can understand tagged HTML`` () =
     let {Date=date; Title=title; Description=description; Next=_} = HtmlDocument.digest s taggedHtml
     Assert.Equal(Some "TheTitle", title)
     Assert.Equal(Some "TheDescription", description)
-    Assert.Equal(DateTime(2021,1,9), date)
+    Assert.Equal(Some <| DateTime(2021,1,9), date)
 
 let defaultSite={ Title = None; Link=Uri("https://somesite.com"); Description = None; Selectors = Selectors.Default }
 let defaultOptions = { PollTimeout = TimeSpan(0,1,0); VisitTimeout = TimeSpan(30,0,0,0); ItemsToPoll = 10 }

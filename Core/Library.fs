@@ -18,7 +18,6 @@ module String=
 
 open FSharpPlus
 open FSharp.Data
-open Microsoft.FSharp.Quotations
 
 type Selectors = {
   CssDate : string option
@@ -64,7 +63,7 @@ module DateTime=
            failwithf "Unknown TypeName %s" typename
     | None -> None
   let tryParse x = tryParseISO8601 x <|> tryRecognize x
-type Digested = { Date: DateTime; Title: string option; Description: string option; Next: Uri option; List: Uri list option }
+type Digested = { Date: DateTime Option; Title: string option; Description: string option; Next: Uri option; List: Uri list option }
 module HtmlDocument=
   let digest (s:Selectors) (htmlDoc:HtmlDocument) =
     let selectInnerText selector =
@@ -86,18 +85,18 @@ module HtmlDocument=
     let ogTitle = metaSelect "og:title"
     let ogDescription = metaSelect "og:description"
 
-    let date =  s.CssDate >>= dateSelect <|> publishedTime |> Option.defaultValue DateTime.UtcNow
+    let date =  s.CssDate >>= dateSelect <|> publishedTime
     let title = s.CssTitle >>= selectInnerText <|> ogTitle
     let description = s.CssDescription >>= selectInnerText <|> ogDescription
     let next = s.CssNext >>= selectHref |> map Uri
-    let list = None // s.CssList >>= selectHrefs |> map Uri
+    let list = map selectHrefs s.CssList |> map (map Uri)
     {Date=date; Title=title; Description=description; Next = next; List = list}
 
 module FeedItem =
   let ofValues (link:Uri,{ Date=date; Title=title; Description=description; Next=_}) =
     let numberAndLinkTitle = link.PathAndQuery.Replace("_"," ").Replace("-"," ").Replace("/"," ")
     {Title = Option.defaultValue numberAndLinkTitle title
-     Date = date
+     Date = Option.defaultValue DateTime.MinValue date
      Description = Option.defaultValue "" description
      Link = link }
   let date (fi:FeedItem) = fi.Date
@@ -233,24 +232,34 @@ module Site=
   /// munch items for a site
   let munchAndStore (store:IStore) (id,site:Site) = async {
     let s = site.Selectors
+    /// applies mapping in reverse order (a bit ugly, but should be well enough)
+    let seqRevMap map (items: _ seq) = Seq.rev (seq { for item in Seq.rev items do yield map item })
+    let someUtcNow () = Some DateTime.UtcNow
+    let fillDateOfDigested (uri,item:Digested) = (uri,{ item with Date = Option.orElseWith someUtcNow item.Date })
+    /// the assumption is that the tail is the oldest element
+    let revWithDate items = seqRevMap fillDateOfDigested items
+    /// the assumption is that the head is the oldest element
+    let withDate items = map fillDateOfDigested items
     match s.CssNext, s.CssList with
     | Some _ , _->
       let! last = store.GetFeedItems id |> Async.map (Seq.sortByDescending FeedItem.date >> Seq.tryHead)
       match last with
       | Some item ->
-        let! res = munch item.Link s |> Async.map (Seq.map FeedItem.ofValues >> Seq.skip 1)
+        // the assumption is that since we start at 
+        let! res = munch item.Link s |> Async.map (Seq.skip 1 >> withDate >> Seq.map FeedItem.ofValues)
         do! store.AddPolledItems (id, res)
       | None -> 
-        let! res = munch site.Link s |> Async.map (Seq.map FeedItem.ofValues)
-        do! store.AddPolledItems (id, res) 
+        let! res = munch site.Link s |> Async.map (withDate >> Seq.map FeedItem.ofValues)
+        do! store.AddPolledItems (id, res)
     | _     , Some _ ->
         let! list = store.GetFeedItems id
         let whereNotAlreadyStored =
           let link (i:FeedItem) = string i.Link
-          let links = map link list |> Set.ofSeq 
-          let notAlreadyStored link = not <| Set.contains (string link) links 
+          let links = map link list |> Set.ofSeq
+          let notAlreadyStored link = not <| Set.contains (string link) links
           notAlreadyStored
-        let! res = munchList site.Link s whereNotAlreadyStored |> Async.map (Seq.map FeedItem.ofValues)
+        // we want to color in dates in reverse order then map to FeedItems
+        let! res = munchList site.Link s whereNotAlreadyStored |> Async.map (revWithDate >> Seq.map FeedItem.ofValues)
         do! store.AddPolledItems (id, res)
     | _     , _      -> failwith "Invalid site configuration, should result in bad request" 
   }
@@ -269,12 +278,11 @@ module Rss=
           let link = string i.Link
           let guid = string <| String.toGuid i.Link.PathAndQuery
           XElement(xn "item",
-            elem "title" (htmlencode i.Title),
-            elem "link" link,
-            elem "guid" guid,
-            elem "pubDate" (i.Date.ToString("r")),
-            elem "description" (htmlencode i.Description)
-          ))
+                   elem "title" (htmlencode i.Title),
+                   elem "link" link,
+                   elem "guid" guid,
+                   elem "pubDate" (i.Date.ToString("r")),
+                   elem "description" (htmlencode i.Description)))
     XDocument(
       XDeclaration("1.0", "utf-8", "yes"),
         XElement(xn "rss",
