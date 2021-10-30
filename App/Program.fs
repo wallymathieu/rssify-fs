@@ -22,6 +22,26 @@ open Giraffe
 open Rssify.Core
 open Marten
 open Marten.Events
+module View=
+  open Giraffe.GiraffeViewEngine
+  let index = html [] [
+    head [] [
+      title [] [ Text "Rssify" ]
+    ]
+    body [] [
+      form [ _action "rss"; _method "GET"] [
+        input [ _type "text"; _name "FeedTitle"; _placeholder "Feed Title..." ]
+        input [ _type "text"; _name "FeedDescription"; _placeholder "Feed Description..." ]
+        input [ _type "text"; _name "Link"; _placeholder "Link..." ]
+        input [ _type "text"; _name "Date"; _placeholder "Date..." ]
+        input [ _type "text"; _name "Title"; _placeholder "Title..." ]
+        input [ _type "text"; _name "Description"; _placeholder "Description..." ]
+        input [ _type "text"; _name "Next"; _placeholder "Next..." ]
+        input [ _type "text"; _name "List"; _placeholder "List..." ]
+        button [] [str "RSS"]
+      ]
+    ]
+  ]
 
 (*
  /rss?url=encodedUrl&date=encodedDateSelector&description=encodedDescriptionSelector..
@@ -41,31 +61,33 @@ module Web=
   [<CLIMutable>]
   type QueryString =
     {
-      FeedTitle       : string option
-      FeedDescription : string option
+      FeedTitle       : string
+      FeedDescription : string
       Link            : string
-      Date            : string option
-      Title           : string option
-      Description     : string option
-      Next            : string option
-      List            : string option
+      Date            : string
+      Title           : string
+      Description     : string
+      Next            : string
+      List            : string
     }
+  let nullOrEmptyToNone (s:string) = if String.IsNullOrEmpty s then None else Some s 
   let toSiteAndSelectors (q:QueryString)=
     let link = Uri q.Link
     {
-      Title       = q.FeedTitle
+      Title       = nullOrEmptyToNone q.FeedTitle
       Link        = link
-      Description = q.FeedDescription
+      Description = nullOrEmptyToNone q.FeedDescription
       Selectors   = {
-        CssDate        = q.Date
-        CssTitle       = q.Title
-        CssDescription = q.Description
-        CssNext        = q.Next
-        CssList        = q.List
+        CssDate        = nullOrEmptyToNone q.Date
+        CssTitle       = nullOrEmptyToNone q.Title
+        CssDescription = nullOrEmptyToNone q.Description
+        CssNext        = nullOrEmptyToNone q.Next
+        CssList        = nullOrEmptyToNone q.List
       }
     }
   let queryToId (q:QueryString) =
-            [q.FeedTitle;q.FeedDescription;Some q.Link;q.Date;q.Title;q.Description;q.Next;q.List]
+            [q.FeedTitle;q.FeedDescription;q.Link;q.Date;q.Title;q.Description;q.Next;q.List]
+            |> List.map nullOrEmptyToNone
             |> List.choose id
             |> SHA512.ofList
             |> SiteId
@@ -116,8 +138,7 @@ module Web=
         |> Async.bind visitAndItemsToXml
         |> Async.RunSynchronously // NOTE
 
-
-    choose [ route "/" >=> (text "")
+    choose [ route "/" >=> htmlView View.index
              routef "/rss/%d" rssI
              route "/rss" >=> (tryBindQuery<QueryString> rss )]
 
